@@ -1,6 +1,8 @@
 import os
 import requests
 import json
+from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
 
 def search_manga(query):
     url = "https://api.mangadex.org/manga"
@@ -15,7 +17,7 @@ def search_manga(query):
             return None
         
         for idx, manga in enumerate(results, start=1):
-            title = manga["attributes"]["title"]["en"] if "en" in manga["attributes"]["title"] else list(manga["attributes"]["title"].values())[0]
+            title = manga["attributes"]["title"].get("en", list(manga["attributes"]["title"].values())[0])
             print(f"{idx}. {title} (ID: {manga['id']})")
         
         choice = int(input("Enter the number of the manga you want: ")) - 1
@@ -45,6 +47,13 @@ def get_chapters(manga_id):
         print("Error fetching chapters.")
         return None
 
+def download_image(page_url, folder, idx):
+    response = requests.get(page_url, stream=True)
+    if response.status_code == 200:
+        with open(os.path.join(folder, f"{idx}.jpg"), "wb") as f:
+            for chunk in response.iter_content(1024):
+                f.write(chunk)
+
 def download_chapter(chapter_id, manga_title, volume, chapter):
     url = f"https://api.mangadex.org/at-home/server/{chapter_id}"
     response = requests.get(url)
@@ -55,14 +64,12 @@ def download_chapter(chapter_id, manga_title, volume, chapter):
         chapter_hash = data["chapter"]["hash"]
         pages = data["chapter"]["data"]
         
-        folder = os.path.join(manga_title, f"Volume {volume}", f"Chapter {chapter}")
+        folder = os.path.join("Manga", manga_title, f"Volume {volume}", f"Chapter {chapter}")
         os.makedirs(folder, exist_ok=True)
         
-        for idx, page in enumerate(pages, start=1):
-            page_url = f"{base_url}/data/{chapter_hash}/{page}"
-            img_data = requests.get(page_url).content
-            with open(os.path.join(folder, f"{idx}.jpg"), "wb") as f:
-                f.write(img_data)
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            list(tqdm(executor.map(lambda p: download_image(f"{base_url}/data/{chapter_hash}/{p[1]}", folder, p[0]), enumerate(pages, start=1)), total=len(pages), desc=f"Downloading Chapter {chapter}"))
+        
         print(f"Chapter {chapter} downloaded successfully.")
     else:
         print("Error downloading chapter.")

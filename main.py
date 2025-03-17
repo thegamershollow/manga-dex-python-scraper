@@ -1,8 +1,8 @@
 import os
-import requests
+import aiohttp
+import asyncio
 import json
-from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
+from tqdm.asyncio import tqdm
 
 def search_manga(query):
     url = "https://api.mangadex.org/manga"
@@ -47,34 +47,31 @@ def get_chapters(manga_id):
         print("Error fetching chapters.")
         return None
 
-def download_image(page_url, folder, idx):
-    response = requests.get(page_url, stream=True)
-    if response.status_code == 200:
-        with open(os.path.join(folder, f"{idx}.jpg"), "wb") as f:
-            for chunk in response.iter_content(1024):
-                f.write(chunk)
+async def download_image(session, page_url, folder, idx):
+    async with session.get(page_url) as response:
+        if response.status == 200:
+            with open(os.path.join(folder, f"{idx}.jpg"), "wb") as f:
+                f.write(await response.read())
 
-def download_chapter(chapter_id, manga_title, volume, chapter):
+async def download_chapter(session, chapter_id, manga_title, volume, chapter):
     url = f"https://api.mangadex.org/at-home/server/{chapter_id}"
-    response = requests.get(url)
-    
-    if response.status_code == 200:
-        data = response.json()
-        base_url = data["baseUrl"]
-        chapter_hash = data["chapter"]["hash"]
-        pages = data["chapter"]["data"]
-        
-        folder = os.path.join("Manga", manga_title, f"Volume {volume}", f"Chapter {chapter}")
-        os.makedirs(folder, exist_ok=True)
-        
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            list(tqdm(executor.map(lambda p: download_image(f"{base_url}/data/{chapter_hash}/{p[1]}", folder, p[0]), enumerate(pages, start=1)), total=len(pages), desc=f"Downloading Chapter {chapter}"))
-        
-        print(f"Chapter {chapter} downloaded successfully.")
-    else:
-        print("Error downloading chapter.")
+    async with session.get(url) as response:
+        if response.status == 200:
+            data = await response.json()
+            base_url = data["baseUrl"]
+            chapter_hash = data["chapter"]["hash"]
+            pages = data["chapter"]["data"]
+            
+            folder = os.path.join("Manga", manga_title, f"Volume {volume}", f"Chapter {chapter}")
+            os.makedirs(folder, exist_ok=True)
+            
+            tasks = [download_image(session, f"{base_url}/data/{chapter_hash}/{p}", folder, idx) for idx, p in enumerate(pages, start=1)]
+            await tqdm.gather(*tasks, desc=f"Downloading Chapter {chapter}")
+            print(f"Chapter {chapter} downloaded successfully.")
+        else:
+            print("Error downloading chapter.")
 
-def main():
+async def main():
     query = input("Enter manga title: ")
     manga_id = search_manga(query)
     if not manga_id:
@@ -91,26 +88,27 @@ def main():
     option = input("Download (1) Entire Manga, (2) Specific Volume, (3) Specific Chapter: ")
     manga_title = query.replace(" ", "_")
     
-    if option == "1":
-        for volume, chapter_list in chapters.items():
-            for chapter, chapter_id in chapter_list.items():
-                download_chapter(chapter_id, manga_title, volume, chapter)
-    elif option == "2":
-        volume = input("Enter volume number: ")
-        if volume in chapters:
-            for chapter, chapter_id in chapters[volume].items():
-                download_chapter(chapter_id, manga_title, volume, chapter)
+    async with aiohttp.ClientSession() as session:
+        if option == "1":
+            for volume, chapter_list in chapters.items():
+                for chapter, chapter_id in chapter_list.items():
+                    await download_chapter(session, chapter_id, manga_title, volume, chapter)
+        elif option == "2":
+            volume = input("Enter volume number: ")
+            if volume in chapters:
+                for chapter, chapter_id in chapters[volume].items():
+                    await download_chapter(session, chapter_id, manga_title, volume, chapter)
+            else:
+                print("Volume not found.")
+        elif option == "3":
+            volume = input("Enter volume number: ")
+            chapter = input("Enter chapter number: ")
+            if volume in chapters and chapter in chapters[volume]:
+                await download_chapter(session, chapters[volume][chapter], manga_title, volume, chapter)
+            else:
+                print("Chapter not found.")
         else:
-            print("Volume not found.")
-    elif option == "3":
-        volume = input("Enter volume number: ")
-        chapter = input("Enter chapter number: ")
-        if volume in chapters and chapter in chapters[volume]:
-            download_chapter(chapters[volume][chapter], manga_title, volume, chapter)
-        else:
-            print("Chapter not found.")
-    else:
-        print("Invalid option.")
+            print("Invalid option.")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

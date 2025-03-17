@@ -2,6 +2,7 @@ import os
 import aiohttp
 import asyncio
 import json
+import backoff
 from tqdm.asyncio import tqdm
 
 async def search_manga(session, query):
@@ -45,11 +46,14 @@ async def get_chapters(session, manga_id):
             print("Error fetching chapters.")
             return None
 
+@backoff.on_exception(backoff.expo, aiohttp.ClientError, max_tries=5)
 async def download_image(session, page_url, folder, idx):
     async with session.get(page_url) as response:
         if response.status == 200:
-            with open(os.path.join(folder, f"{idx}.jpg"), "wb") as f:
-                f.write(await response.read())
+            file_path = os.path.join(folder, f"{idx}.jpg")
+            with open(file_path, "wb") as f:
+                async for chunk in response.content.iter_any():
+                    f.write(chunk)
 
 async def download_chapter(session, chapter_id, manga_title, volume, chapter):
     url = f"https://api.mangadex.org/at-home/server/{chapter_id}"
@@ -63,7 +67,12 @@ async def download_chapter(session, chapter_id, manga_title, volume, chapter):
             folder = os.path.join("Manga", manga_title, f"Volume {volume}", f"Chapter {chapter}")
             os.makedirs(folder, exist_ok=True)
             
-            tasks = [download_image(session, f"{base_url}/data/{chapter_hash}/{p}", folder, idx) for idx, p in enumerate(pages, start=1)]
+            semaphore = asyncio.Semaphore(5)  # Limit concurrent downloads
+            async def limited_download(idx, p):
+                async with semaphore:
+                    await download_image(session, f"{base_url}/data/{chapter_hash}/{p}", folder, idx)
+            
+            tasks = [limited_download(idx, p) for idx, p in enumerate(pages, start=1)]
             await tqdm.gather(*tasks, desc=f"Downloading Chapter {chapter}")
             print(f"Chapter {chapter} downloaded successfully.")
         else:

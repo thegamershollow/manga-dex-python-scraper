@@ -4,48 +4,46 @@ import asyncio
 import json
 from tqdm.asyncio import tqdm
 
-def search_manga(query):
+async def search_manga(session, query):
     url = "https://api.mangadex.org/manga"
     params = {"title": query, "limit": 5}
-    response = requests.get(url, params=params)
-    
-    if response.status_code == 200:
-        data = response.json()
-        results = data.get("data", [])
-        if not results:
-            print("No manga found.")
+    async with session.get(url, params=params) as response:
+        if response.status == 200:
+            data = await response.json()
+            results = data.get("data", [])
+            if not results:
+                print("No manga found.")
+                return None
+            
+            for idx, manga in enumerate(results, start=1):
+                title = manga["attributes"]["title"].get("en", list(manga["attributes"]["title"].values())[0])
+                print(f"{idx}. {title} (ID: {manga['id']})")
+            
+            choice = int(input("Enter the number of the manga you want: ")) - 1
+            return results[choice]["id"]
+        else:
+            print("Error fetching manga.")
             return None
-        
-        for idx, manga in enumerate(results, start=1):
-            title = manga["attributes"]["title"].get("en", list(manga["attributes"]["title"].values())[0])
-            print(f"{idx}. {title} (ID: {manga['id']})")
-        
-        choice = int(input("Enter the number of the manga you want: ")) - 1
-        return results[choice]["id"]
-    else:
-        print("Error fetching manga.")
-        return None
 
-def get_chapters(manga_id):
+async def get_chapters(session, manga_id):
     url = f"https://api.mangadex.org/manga/{manga_id}/feed"
     params = {"translatedLanguage[]": "en", "order[chapter]": "asc", "limit": 100}
-    response = requests.get(url, params=params)
-    
-    if response.status_code == 200:
-        data = response.json()
-        chapters = {}
-        for chapter in data.get("data", []):
-            volume = chapter["attributes"].get("volume", "Unknown")
-            chapter_num = chapter["attributes"].get("chapter", "Unknown")
-            chapter_id = chapter["id"]
-            
-            if volume not in chapters:
-                chapters[volume] = {}
-            chapters[volume][chapter_num] = chapter_id
-        return chapters
-    else:
-        print("Error fetching chapters.")
-        return None
+    async with session.get(url, params=params) as response:
+        if response.status == 200:
+            data = await response.json()
+            chapters = {}
+            for chapter in data.get("data", []):
+                volume = chapter["attributes"].get("volume", "Unknown")
+                chapter_num = chapter["attributes"].get("chapter", "Unknown")
+                chapter_id = chapter["id"]
+                
+                if volume not in chapters:
+                    chapters[volume] = {}
+                chapters[volume][chapter_num] = chapter_id
+            return chapters
+        else:
+            print("Error fetching chapters.")
+            return None
 
 async def download_image(session, page_url, folder, idx):
     async with session.get(page_url) as response:
@@ -73,22 +71,22 @@ async def download_chapter(session, chapter_id, manga_title, volume, chapter):
 
 async def main():
     query = input("Enter manga title: ")
-    manga_id = search_manga(query)
-    if not manga_id:
-        return
-    
-    chapters = get_chapters(manga_id)
-    if not chapters:
-        return
-    
-    print("Available volumes and chapters:")
-    for volume, chapter_list in chapters.items():
-        print(f"Volume {volume}: Chapters {', '.join(chapter_list.keys())}")
-    
-    option = input("Download (1) Entire Manga, (2) Specific Volume, (3) Specific Chapter: ")
-    manga_title = query.replace(" ", "_")
-    
     async with aiohttp.ClientSession() as session:
+        manga_id = await search_manga(session, query)
+        if not manga_id:
+            return
+        
+        chapters = await get_chapters(session, manga_id)
+        if not chapters:
+            return
+        
+        print("Available volumes and chapters:")
+        for volume, chapter_list in chapters.items():
+            print(f"Volume {volume}: Chapters {', '.join(chapter_list.keys())}")
+        
+        option = input("Download (1) Entire Manga, (2) Specific Volume, (3) Specific Chapter: ")
+        manga_title = query.replace(" ", "_")
+        
         if option == "1":
             for volume, chapter_list in chapters.items():
                 for chapter, chapter_id in chapter_list.items():
